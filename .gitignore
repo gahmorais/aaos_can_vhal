@@ -1,0 +1,29 @@
+# --- C / CMake ---
+build/
+cmake-build-*/
+_deps/
+CMakeCache.txt
+CMakeFiles/
+compile_commands.json
+*.o
+*.a
+*.so
+Testing/
+
+# --- Android / Gradle ---
+.gradle/
+local.properties
+*.apk
+*.aab
+*.keystore
+captures/
+
+# --- IDE ---
+.idea/
+*.iml
+.vscode/
+.claude/settings.local.json
+
+# --- SO ---
+.DS_Store
+*~
