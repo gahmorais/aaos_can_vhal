@@ -61,8 +61,17 @@ Frames CAN no vcan → gateway em C → injeção no VHAL do emulador
 - `decoder/`: PURO. Sem I/O, sem estado global, sem malloc. Faz decodificação DBC
   (Intel/Motorola), escala/offset e sign extension.
 - `app/`: orquestração e máquina de estados.
-- Porta de saída `vhal_sink`, com adapter via `adb shell dumpsys car_service inject-vhal-event`
-  e adapter fake para testes.
+- Porta de saída `vhal_sink`, com três adapters:
+  - **gRPC** contra o `GRPCVehicleHardware` do VHAL (Android 16+) — alvo principal;
+  - `adb shell dumpsys car_service inject-vhal-event` — mantido como fallback e como
+    prova de que a porta está bem isolada (dois transportes, mesmo `decoder/`);
+  - fake, para testes.
+
+  Decisão de 2026-10-13: o adapter gRPC passou a ser o alvo principal porque é o caminho
+  oficial do VHAL moderno, enquanto `adb shell` é ferramenta de debug (um processo por
+  evento, frágil). Trocar o transporte sem tocar no `decoder/` é a demonstração prática
+  do valor de portas e adapters — deixa de ser argumento teórico e vira evidência.
+  Motivos em `docs/contexto-mercado.md`.
 
 ### App Kotlin
 - `VehicleDataSource` expõe dados como `Flow`. A implementação real usa `callbackFlow` sobre
@@ -71,73 +80,27 @@ Frames CAN no vcan → gateway em C → injeção no VHAL do emulador
 - Testes com fake de `VehicleDataSource`, coroutines-test e Turbine.
 - Permissões automotivas e `CarUxRestrictions` tratados explicitamente.
 
-## Mapa para o mercado: o que cada entregável prova
+## Contexto de mercado e direção
 
-Serve para dois usos: priorizar o estudo quando o tempo apertar e ter resposta pronta ao
-falar do projeto em entrevista. A coluna da direita é o requisito que aparece em vaga.
+Raciocínio completo em `docs/contexto-mercado.md`: mapa de cada entregável para requisito
+de vaga, comparação com um roadmap de referência, e a investigação sobre CAN vs
+SOME/IP/DDS/gRPC. Resumo do que é acionável:
 
-### Trilha C
+**Lacunas a preencher** (ordem de impacto): Binder IPC · AIDL · Perfetto/Systrace ·
+Jetpack Compose · JNI · Zygote/ART/boot · Car API além do `CarPropertyManager` ·
+Activity Embedding/multi-window.
 
-| Entregável | Requisito de vaga que cobre |
-|---|---|
-| `bits_extract_le` / `bits_sign_extend` com testes de borda | manipulação bitwise, `stdint`, consciência de UB |
-| Warnings como erro + ASan/UBSan + CI em gcc e clang | rigor de toolchain; base do que MISRA formaliza |
-| Desvios de MISRA anotados com justificativa | ASPICE: decisão técnica documentada e rastreável |
-| Ring buffer sem `malloc`, stack com bound conhecido | determinismo; proibição de alocação dinâmica em runtime |
-| Máquina de estados explícita | padrão dominante em firmware automotivo |
-| Testes com Unity rodando em `ctest` | teste unitário de código embarcado sem hardware |
+**Lacunas assumidas, fora de escopo:** HAL customizado, Treble/VINTF, fastboot/flashing,
+Car App Library e apps de Media/Nav, SystemUI/overlays, ISO 26262/ASPICE/ISO 21434
+(só vocabulário), ferramental Vector/Lauterbach.
 
-### Trilha CAN
-
-| Entregável | Requisito de vaga que cobre |
-|---|---|
-| Frames 11/29 bits, arbitragem, frames de erro | fundamento de CAN exigido em toda vaga do setor |
-| Decodificação DBC Intel e Motorola, escala/offset | ler especificação de sinal de OEM — trabalho diário |
-| SocketCAN + `vcan` + can-utils | substituto de CANoe/CANalyzer; dizer isso explicitamente |
-| ISO-TP (ISO 15765) e UDS (ISO 14229) | item muito citado em vaga e que pouca gente domina |
-| Timeout de frame, sinal obsoleto, contador de erro | **o filtro nº 1 em entrevista**: o que acontece quando o sinal falha |
-
-### Trilha AAOS
-
-| Entregável | Requisito de vaga que cobre |
-|---|---|
-| Cadeia app → Car API → CarService → VHAL entendida | arquitetura AAOS de ponta a ponta |
-| `CarPropertyManager` com `registerCallback` | API central de IVI em Android Automotive |
-| Property IDs, `areaId`, `access`, `changeMode`, sample rate | semântica do VHAL, não só chamada de API |
-| Permissões automotivas e `CarUxRestrictions` | requisito regulatório de distração do motorista |
-| `callbackFlow` com `awaitClose`, `StateFlow`, MVVM | Kotlin moderno; diferencia de quem só sabe C |
-
-### Arquitetura (o diferencial transversal)
-
-| Entregável | Requisito de vaga que cobre |
-|---|---|
-| `can_if` como struct de ponteiros de função | DI em C; trocar hardware sem tocar na lógica |
-| `decoder/` puro, sem I/O nem estado global | testabilidade sem bancada; separação de responsabilidades |
-| Adapters fake para `can_if` e `vhal_sink` | SIL testing — como o setor testa sem veículo |
-| Porta de saída `vhal_sink` isolada | variant management: mesma lógica, saídas diferentes |
-
-### Lacunas que este projeto NÃO cobre
-
-Reconhecer é melhor que ignorar. Nenhuma exige certificação — exige vocabulário.
-
-- **ISO 26262 / ASPICE:** saber o que é ASIL, requisito rastreado, FMEA. Infotainment
-  costuma ser QM ou ASIL-A, então basta nível de conversa (~10h de leitura).
-- **ISO 21434 (cybersecurity):** cada vez mais obrigatório.
-- **AUTOSAR Classic e Adaptive:** pouco relevante para infotainment, central fora dele.
-- **Ferramental proprietário:** Vector (CANoe, CANape), Lauterbach TRACE32, dSPACE. Sem
-  licença acessível; assumir e apontar o equivalente aberto que usei.
-- **AOSP build real:** Soong, SELinux, HAL/AIDL. Ver incursão de leitura nas semanas 10–12.
-- **Inglês técnico de reunião:** projeto automotivo é global; filtro frequente.
-
-### Diferenciais do meu perfil a usar ativamente
-
-- **Hardware em nível de componente:** raro entre devs de software. Camada física de CAN,
-  terminação de 120 Ω, ruído, sinal diferencial.
-- **Produto em campo com periférico serial:** RS-232, coletores, frota via MDM. Mesmo
-  problema conceitual de ECU: ambiente hostil, acesso difícil, atualização de risco.
-- **Liderança de engenharia:** abre posição sênior/tech lead em vez de pleno; escasso em
-  consultoria automotiva.
-
+**Decisões registradas:**
+- **Manter a trilha CAN.** "CAN está em desuso" é erro de categoria — SOME/IP, DDS e gRPC
+  são middleware sobre IP, não barramentos. O CAN muda de papel (última milha), e o
+  CAN XL (ISO 11898-1:2024, até 2048 B) foi feito para transportar SOME/IP.
+- **gRPC como alvo principal do `vhal_sink`** — ver "Projeto final".
+- Testes, CI, sanitizers, MISRA, DBC, ISO-TP/UDS e arquitetura hexagonal são o
+  diferencial deste plano: nenhum roadmap consultado os menciona.
 ## Convenções de C
 
 - **Padrão:** C11, `CMAKE_C_EXTENSIONS OFF`.
@@ -168,7 +131,9 @@ can-vhal-bridge/
 │   ├── src/*.c
 │   └── test/test_*.c
 ├── android/
-├── docs/                      # setup de ambiente e comandos validados
+├── docs/
+│   ├── setup-aaos-emulator.md   # ambiente e comandos validados
+│   └── contexto-mercado.md      # mapa de carreira, roadmaps, protocolos
 └── .github/workflows/ci.yml   # matriz gcc/clang; clang-tidy e cppcheck a partir da sem. 2-3
 ```
 
@@ -227,3 +192,24 @@ Checklist:
 
 ### Semanas 3–12
 A detalhar conforme avanço. Atualize esta seção quando eu pedir.
+
+Acréscimos de 2026-10-13, da comparação com o roadmap de referência
+(`docs/contexto-mercado.md`):
+
+- **Semana 4 ou 5 (~4h):** Binder IPC e AIDL como leitura, feita *enquanto* mexo em
+  `CarPropertyManager`. Entender o mecanismo enquanto uso a API rende mais que ler antes.
+- **Trilha AAOS (~2h):** capturar um trace de Perfetto do emulador durante uma injeção e
+  observar a propagação. Rende a ferramenta e a confirmação visual do caminho push.
+- **Antes de começar o app Kotlin:** decidir Compose vs Views explicitamente e registrar
+  a decisão aqui.
+- **Semanas 10–12 — incursão de leitura ao AOSP** (sem build): ler o
+  `FakeVehicleHardware` **e** o caminho Binder/AIDL do `CarPropertyService`. Cobre as
+  lacunas Binder, AIDL e Zygote/ART/boot de uma vez e fecha o entendimento do que
+  estive simulando.
+
+Acréscimos de 2026-10-13, da investigação sobre protocolos:
+
+- **Adapter gRPC do `vhal_sink`** — entra no escopo principal do projeto, não é extra.
+  Ler primeiro o `GRPCVehicleHardware` e o `grpc-vhal-aidl-client` no AOSP.
+- **Semanas 10–12, opcional:** VSS, KUKSA databroker e vsomeip
+  (`docs/contexto-mercado.md`). Só se as trilhas principais estiverem fechadas.
